@@ -1,0 +1,77 @@
+name: 打包 Windows 免安裝版
+
+on:
+  # 在 GitHub 網頁「Actions」頁籤按「Run workflow」手動執行，並輸入版本號
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本號（例如 1.0.0）"
+        required: true
+        default: "1.0.0"
+  # 或是推送 v1.0.0 這類標籤時自動執行
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write   # 需要權限才能建立 Release 並附上壓縮檔
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      INPUT_VERSION: ${{ github.event.inputs.version }}
+      REF_NAME: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 決定版本號
+        shell: pwsh
+        run: |
+          $v = $env:INPUT_VERSION
+          if (-not $v) { $v = $env:REF_NAME.TrimStart('v') }
+          "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: 安裝套件
+        run: python -m pip install -r requirements.txt pyinstaller
+
+      - name: 執行自動測試（含無螢幕介面測試）
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest discover -s tests -v
+
+      - name: 打包成免安裝程式
+        run: pyinstaller --noconfirm --noconsole --onedir --name ShiftScheduler main.py
+
+      - name: 驗證打包後的 exe 能正常啟動
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist\ShiftScheduler\ShiftScheduler.exe" -ArgumentList "--selftest" -PassThru
+          if (-not $p.WaitForExit(90000)) { $p.Kill(); throw "exe 啟動後 90 秒內沒有結束" }
+          if ($p.ExitCode -ne 0) { throw "exe 自我檢查失敗，結束碼 $($p.ExitCode)" }
+
+      - name: 壓縮成 zip
+        shell: pwsh
+        run: |
+          Copy-Item "docs\使用說明.txt" "dist\ShiftScheduler\使用說明.txt"
+          Compress-Archive -Path "dist\ShiftScheduler" -DestinationPath "ShiftScheduler-v$($env:VERSION)-win64.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ShiftScheduler-v${{ env.VERSION }}-win64
+          path: ShiftScheduler-v${{ env.VERSION }}-win64.zip
+
+      - name: 建立 Release 並附上壓縮檔
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: 排班系統 v${{ env.VERSION }}
+          files: ShiftScheduler-v${{ env.VERSION }}-win64.zip
+          body: |
+            下載下方的 ShiftScheduler-*-win64.zip，解壓縮後雙擊 ShiftScheduler.exe 即可使用。
+            更新版本時：解壓縮後直接覆蓋舊資料夾即可，人員與崗位資料不會被更動。
